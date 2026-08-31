@@ -7,10 +7,10 @@ import subprocess
 
 
 def show_banner():
-    print("=" * 40)
-    print("       REDSCAN v0.5")
-    print(" Authorized Security Scanner")
-    print("=" * 40)
+    print("=" * 45)
+    print("          REDSCAN v0.6")
+    print("    Authorized Security Scanner")
+    print("=" * 45)
 
 
 def validate_target(target):
@@ -33,17 +33,48 @@ def check_reachability(target):
     return result.returncode == 0
 
 
+def parse_ports(port_input):
+    ports = set()
+
+    for item in port_input.split(","):
+        item = item.strip()
+
+        if "-" in item:
+            try:
+                start, end = map(int, item.split("-", 1))
+
+                if start < 1 or end > 65535 or start > end:
+                    raise ValueError
+
+                ports.update(range(start, end + 1))
+
+            except ValueError:
+                print(f"[-] Invalid port range: {item}")
+                return None
+
+        else:
+            try:
+                port = int(item)
+
+                if port < 1 or port > 65535:
+                    raise ValueError
+
+                ports.add(port)
+
+            except ValueError:
+                print(f"[-] Invalid port: {item}")
+                return None
+
+    return sorted(ports)
+
+
 def scan_port(target, port):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(1)
 
     try:
         result = sock.connect_ex((target, port))
-
-        if result == 0:
-            return True
-
-        return False
+        return result == 0
 
     except socket.error:
         return False
@@ -54,14 +85,27 @@ def scan_port(target, port):
 
 def scan_ports(target, ports):
     print("\n[*] Starting TCP port scan...")
+    print(f"[*] Ports to scan: {len(ports)}")
+
+    open_ports = []
 
     for port in ports:
         print(f"[*] Checking port {port}...", end=" ")
 
         if scan_port(target, port):
             print("OPEN")
+            open_ports.append(port)
         else:
             print("CLOSED")
+
+    print("\n[*] Scan complete.")
+
+    if open_ports:
+        print("\n[+] Open ports:")
+        for port in open_ports:
+            print(f"    - {port}")
+    else:
+        print("\n[-] No open ports found.")
 
 
 def main():
@@ -73,7 +117,13 @@ def main():
 
     parser.add_argument(
         "target",
-        help="Target IPv4 or IPv6 address"
+        help="Target IPv4 address"
+    )
+
+    parser.add_argument(
+        "--ports",
+        default="22,80,443",
+        help="Ports to scan. Example: 22,80,443 or 1-100"
     )
 
     args = parser.parse_args()
@@ -86,13 +136,20 @@ def main():
 
     print("[+] Valid IP address.")
 
+    ports = parse_ports(args.ports)
+
+    if ports is None:
+        return
+
+    if not ports:
+        print("[-] No ports specified.")
+        return
+
     if check_reachability(args.target):
         print("[+] Target is reachable.")
     else:
         print("[-] Target is not reachable.")
         return
-
-    ports = [22, 80, 443]
 
     scan_ports(args.target, ports)
 
