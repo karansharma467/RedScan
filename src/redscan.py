@@ -8,7 +8,7 @@ import subprocess
 
 def show_banner():
     print("=" * 45)
-    print("          REDSCAN v0.6")
+    print("          REDSCAN v0.7")
     print("    Authorized Security Scanner")
     print("=" * 45)
 
@@ -83,6 +83,14 @@ def scan_port(target, port):
         sock.close()
 
 
+def detect_service(port):
+    try:
+        service = socket.getservbyport(port, "tcp")
+        return service.upper()
+    except OSError:
+        return "UNKNOWN"
+
+
 def scan_ports(target, ports):
     print("\n[*] Starting TCP port scan...")
     print(f"[*] Ports to scan: {len(ports)}")
@@ -93,17 +101,22 @@ def scan_ports(target, ports):
         print(f"[*] Checking port {port}...", end=" ")
 
         if scan_port(target, port):
-            print("OPEN")
-            open_ports.append(port)
+            service = detect_service(port)
+
+            print(f"OPEN ({service})")
+
+            open_ports.append((port, service))
         else:
             print("CLOSED")
 
     print("\n[*] Scan complete.")
 
     if open_ports:
-        print("\n[+] Open ports:")
-        for port in open_ports:
-            print(f"    - {port}")
+        print("\n[+] Open ports and services:")
+
+        for port, service in open_ports:
+            print(f"    - Port {port}: {service}")
+
     else:
         print("\n[-] No open ports found.")
 
