@@ -2,13 +2,15 @@
 
 import argparse
 import ipaddress
+import os
 import socket
 import subprocess
+from datetime import datetime
 
 
 def show_banner():
     print("=" * 45)
-    print("          REDSCAN v0.8")
+    print("          REDSCAN v0.9")
     print("    Authorized Security Scanner")
     print("=" * 45)
 
@@ -116,18 +118,23 @@ def inspect_http(target, port):
 
         lines = response.splitlines()
 
+        status_line = ""
+        server_header = ""
+
         if lines:
-            print(f"    [+] HTTP response: {lines[0]}")
+            status_line = lines[0]
+            print(f"    [+] HTTP response: {status_line}")
 
         for line in lines:
             if line.lower().startswith("server:"):
+                server_header = line
                 print(f"    [+] {line}")
 
-        return True
+        return status_line, server_header
 
     except (socket.timeout, socket.error):
         print("    [-] HTTP inspection failed.")
-        return False
+        return "", ""
 
 
 def scan_ports(target, ports):
@@ -144,10 +151,15 @@ def scan_ports(target, ports):
 
             print(f"OPEN ({service})")
 
-            open_ports.append((port, service))
+            http_status = ""
+            server_header = ""
 
             if service in ["HTTP", "HTTP-ALT"] or port in [80, 443, 8080, 8000]:
-                inspect_http(target, port)
+                http_status, server_header = inspect_http(target, port)
+
+            open_ports.append(
+                (port, service, http_status, server_header)
+            )
 
         else:
             print("CLOSED")
@@ -157,11 +169,59 @@ def scan_ports(target, ports):
     if open_ports:
         print("\n[+] Open ports and services:")
 
-        for port, service in open_ports:
+        for port, service, http_status, server_header in open_ports:
             print(f"    - Port {port}: {service}")
+
+            if http_status:
+                print(f"      {http_status}")
+
+            if server_header:
+                print(f"      {server_header}")
 
     else:
         print("\n[-] No open ports found.")
+
+    return open_ports
+
+
+def save_report(target, ports, open_ports):
+    os.makedirs("reports", exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    filename = f"reports/scan_{target}_{timestamp}.txt"
+
+    with open(filename, "w", encoding="utf-8") as report:
+        report.write("REDSCAN SECURITY REPORT\n")
+        report.write("=" * 50 + "\n\n")
+
+        report.write(f"Target: {target}\n")
+        report.write(f"Scan time: {datetime.now()}\n")
+        report.write(f"Ports scanned: {len(ports)}\n\n")
+
+        report.write("OPEN PORTS\n")
+        report.write("-" * 50 + "\n")
+
+        if open_ports:
+            for port, service, http_status, server_header in open_ports:
+                report.write(
+                    f"Port {port}: {service}\n"
+                )
+
+                if http_status:
+                    report.write(
+                        f"  {http_status}\n"
+                    )
+
+                if server_header:
+                    report.write(
+                        f"  {server_header}\n"
+                    )
+
+        else:
+            report.write("No open ports found.\n")
+
+    print(f"\n[+] Report saved: {filename}")
 
 
 def main():
@@ -207,7 +267,13 @@ def main():
         print("[-] Target is not reachable.")
         return
 
-    scan_ports(args.target, ports)
+    open_ports = scan_ports(args.target, ports)
+
+    save_report(
+        args.target,
+        ports,
+        open_ports
+    )
 
 
 if __name__ == "__main__":
