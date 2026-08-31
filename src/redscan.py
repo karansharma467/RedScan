@@ -8,7 +8,7 @@ import subprocess
 
 def show_banner():
     print("=" * 45)
-    print("          REDSCAN v0.7")
+    print("          REDSCAN v0.8")
     print("    Authorized Security Scanner")
     print("=" * 45)
 
@@ -87,8 +87,47 @@ def detect_service(port):
     try:
         service = socket.getservbyport(port, "tcp")
         return service.upper()
+
     except OSError:
         return "UNKNOWN"
+
+
+def inspect_http(target, port):
+    print(f"    [*] Inspecting HTTP service on port {port}...")
+
+    try:
+        sock = socket.create_connection((target, port), timeout=2)
+
+        request = (
+            f"HEAD / HTTP/1.1\r\n"
+            f"Host: {target}\r\n"
+            f"Connection: close\r\n"
+            f"\r\n"
+        )
+
+        sock.sendall(request.encode())
+
+        response = sock.recv(4096).decode(
+            "utf-8",
+            errors="replace"
+        )
+
+        sock.close()
+
+        lines = response.splitlines()
+
+        if lines:
+            print(f"    [+] HTTP response: {lines[0]}")
+
+        for line in lines:
+            if line.lower().startswith("server:"):
+                print(f"    [+] {line}")
+
+        return True
+
+    except (socket.timeout, socket.error):
+        print("    [-] HTTP inspection failed.")
+        return False
 
 
 def scan_ports(target, ports):
@@ -106,6 +145,10 @@ def scan_ports(target, ports):
             print(f"OPEN ({service})")
 
             open_ports.append((port, service))
+
+            if service in ["HTTP", "HTTP-ALT"] or port in [80, 443, 8080, 8000]:
+                inspect_http(target, port)
+
         else:
             print("CLOSED")
 
