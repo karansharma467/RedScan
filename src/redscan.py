@@ -8,7 +8,7 @@ import subprocess
 from datetime import datetime
 
 
-VERSION = "1.0"
+VERSION = "1.1"
 
 
 def show_banner():
@@ -77,15 +77,15 @@ def parse_ports(port_string):
     return sorted(ports)
 
 
-def scan_port(target, port, timeout=1):
+def scan_port(target, port, timeout):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(timeout)
 
-    result = sock.connect_ex((target, port))
-
-    sock.close()
-
-    return result == 0
+    try:
+        result = sock.connect_ex((target, port))
+        return result == 0
+    finally:
+        sock.close()
 
 
 def detect_service(port):
@@ -100,13 +100,18 @@ def inspect_http(target, port):
 
     try:
         sock = socket.create_connection((target, port), timeout=2)
+
         sock.sendall(
             b"HEAD / HTTP/1.1\r\n"
             b"Host: localhost\r\n"
             b"Connection: close\r\n\r\n"
         )
 
-        response = sock.recv(4096).decode("utf-8", errors="replace")
+        response = sock.recv(4096).decode(
+            "utf-8",
+            errors="replace"
+        )
+
         sock.close()
 
         lines = response.splitlines()
@@ -129,15 +134,16 @@ def inspect_http(target, port):
         return "Inspection failed", "Not available"
 
 
-def scan_ports(target, ports):
+def scan_ports(target, ports, timeout):
     results = []
 
     print(f"\n[*] Scanning {len(ports)} port(s)...")
+    print(f"[*] Connection timeout: {timeout} second(s)")
 
     for port in ports:
         print(f"[*] Checking port {port}...", end=" ")
 
-        if scan_port(target, port):
+        if scan_port(target, port, timeout):
             service = detect_service(port)
 
             print(f"OPEN ({service})")
@@ -146,7 +152,10 @@ def scan_ports(target, ports):
             server = None
 
             if port in [80, 443, 8000, 8080, 8443]:
-                http_status, server = inspect_http(target, port)
+                http_status, server = inspect_http(
+                    target,
+                    port
+                )
 
             results.append({
                 "port": port,
@@ -161,14 +170,15 @@ def scan_ports(target, ports):
     return results
 
 
-def print_summary(target, ports, results):
+def print_summary(target, ports, results, timeout):
     print("\n" + "=" * 55)
     print("                    SCAN SUMMARY")
     print("=" * 55)
 
-    print(f"Target       : {target}")
-    print(f"Ports scanned: {len(ports)}")
-    print(f"Open ports   : {len(results)}")
+    print(f"Target         : {target}")
+    print(f"Ports scanned  : {len(ports)}")
+    print(f"Timeout        : {timeout} second(s)")
+    print(f"Open ports     : {len(results)}")
 
     if results:
         print("\nOpen Services:")
@@ -194,7 +204,7 @@ def print_summary(target, ports, results):
     print("=" * 55)
 
 
-def save_report(target, ports, results, start_time):
+def save_report(target, ports, results, start_time, timeout):
     os.makedirs("reports", exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -202,14 +212,16 @@ def save_report(target, ports, results, start_time):
 
     with open(filename, "w") as report:
         report.write("=" * 55 + "\n")
-        report.write(f"REDScan v{VERSION} Scan Report\n")
+        report.write(f"RedScan v{VERSION} Scan Report\n")
         report.write("=" * 55 + "\n\n")
 
         report.write(f"Target: {target}\n")
         report.write(
-            f"Scan time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"Scan time: "
+            f"{start_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
         )
         report.write(f"Ports scanned: {len(ports)}\n")
+        report.write(f"Timeout: {timeout} second(s)\n")
         report.write(f"Open ports: {len(results)}\n\n")
 
         if results:
@@ -253,12 +265,23 @@ def main():
         help="Ports to scan, e.g. 22,80,443 or 20-25"
     )
 
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=1.0,
+        help="TCP connection timeout in seconds (default: 1.0)"
+    )
+
     args = parser.parse_args()
 
     show_banner()
 
     if not validate_target(args.target):
         print(f"\n[-] Invalid IP address: {args.target}")
+        return
+
+    if args.timeout <= 0:
+        print("\n[-] Timeout must be greater than 0.")
         return
 
     try:
@@ -275,18 +298,29 @@ def main():
 
     print(f"\n[*] Target: {args.target}")
     print(f"[*] Ports: {args.ports}")
+    print(f"[*] Timeout: {args.timeout} second(s)")
 
     check_reachability(args.target)
 
-    results = scan_ports(args.target, ports)
+    results = scan_ports(
+        args.target,
+        ports,
+        args.timeout
+    )
 
-    print_summary(args.target, ports, results)
+    print_summary(
+        args.target,
+        ports,
+        results,
+        args.timeout
+    )
 
     save_report(
         args.target,
         ports,
         results,
-        start_time
+        start_time,
+        args.timeout
     )
 
 
