@@ -2,13 +2,14 @@
 
 import argparse
 import ipaddress
+import json
 import os
 import socket
 import subprocess
 from datetime import datetime
 
 
-VERSION = "1.5"
+VERSION = "1.6"
 
 SCAN_MODES = {
     "quick": "22,80,443,8080",
@@ -139,6 +140,7 @@ def scan_port(target, port, timeout):
         result = sock.connect_ex(
             (target, port)
         )
+
         return result == 0
 
     finally:
@@ -284,19 +286,16 @@ def check_http_security(headers, port):
     if not headers:
         return findings
 
-    # Server information disclosure
     if "server" in headers:
-        server_value = headers["server"]
-
         findings.append({
             "severity": "INFO",
             "title": "Server information disclosed",
             "details": (
-                f"Server header: {server_value}"
+                f"Server header: "
+                f"{headers['server']}"
             )
         })
 
-    # X-Content-Type-Options
     if "x-content-type-options" not in headers:
         findings.append({
             "severity": "LOW",
@@ -307,7 +306,6 @@ def check_http_security(headers, port):
             )
         })
 
-    # X-Frame-Options
     if "x-frame-options" not in headers:
         findings.append({
             "severity": "LOW",
@@ -318,7 +316,6 @@ def check_http_security(headers, port):
             )
         })
 
-    # Content-Security-Policy
     if "content-security-policy" not in headers:
         findings.append({
             "severity": "LOW",
@@ -329,7 +326,6 @@ def check_http_security(headers, port):
             )
         })
 
-    # HSTS is mainly relevant to HTTPS
     if port == 443:
         if "strict-transport-security" not in headers:
             findings.append({
@@ -414,7 +410,7 @@ def run_security_checks(
     findings = []
 
     print(
-        f"    [*] Running basic security checks..."
+        "    [*] Running basic security checks..."
     )
 
     findings.extend(
@@ -521,14 +517,11 @@ def scan_ports(
                 )
 
                 if banner:
-
                     print(
                         f"    [+] Banner: "
                         f"{banner}"
                     )
-
                 else:
-
                     print(
                         "    [-] No banner received."
                     )
@@ -646,7 +639,8 @@ def print_summary(
                 ]:
 
                     print(
-                        f"      [{finding['severity']}] "
+                        f"      "
+                        f"[{finding['severity']}] "
                         f"{finding['title']}"
                     )
 
@@ -661,7 +655,7 @@ def print_summary(
     )
 
 
-def save_report(
+def save_text_report(
     target,
     hostname,
     ports,
@@ -726,86 +720,122 @@ def save_report(
             f"Timeout: {timeout} second(s)\n"
         )
 
+        report.write(
+            f"Open ports: {len(results)}\n"
+        )
+
         total_findings = sum(
             len(result["findings"])
             for result in results
         )
 
         report.write(
-            f"Open ports: {len(results)}\n"
-        )
-
-        report.write(
             f"Findings: {total_findings}\n\n"
         )
 
-        if results:
+        for result in results:
 
             report.write(
-                "Open Services:\n\n"
+                f"- Port {result['port']}: "
+                f"{result['service']}\n"
             )
 
-            for result in results:
-
+            if result["banner"]:
                 report.write(
-                    f"- Port "
-                    f"{result['port']}: "
-                    f"{result['service']}\n"
+                    f"  Banner: "
+                    f"{result['banner']}\n"
                 )
 
-                if result["banner"]:
+            if result["http_status"]:
+                report.write(
+                    f"  HTTP: "
+                    f"{result['http_status']}\n"
+                )
 
-                    report.write(
-                        f"  Banner: "
-                        f"{result['banner']}\n"
-                    )
+            if result["server"]:
+                report.write(
+                    f"  Server: "
+                    f"{result['server']}\n"
+                )
 
-                if result["http_status"]:
+            for finding in result["findings"]:
+                report.write(
+                    f"  [{finding['severity']}] "
+                    f"{finding['title']}\n"
+                )
 
-                    report.write(
-                        f"  HTTP: "
-                        f"{result['http_status']}\n"
-                    )
+                report.write(
+                    f"    {finding['details']}\n"
+                )
 
-                if result["server"]:
-
-                    report.write(
-                        f"  Server: "
-                        f"{result['server']}\n"
-                    )
-
-                if result["findings"]:
-
-                    report.write(
-                        "  Security Findings:\n"
-                    )
-
-                    for finding in result[
-                        "findings"
-                    ]:
-
-                        report.write(
-                            f"    [{finding['severity']}] "
-                            f"{finding['title']}\n"
-                        )
-
-                        report.write(
-                            f"      "
-                            f"{finding['details']}\n"
-                        )
-
-                report.write("\n")
-
-        else:
-
-            report.write(
-                "No open ports found.\n"
-            )
+            report.write("\n")
 
     print(
-        f"\n[+] Report saved: "
-        f"{filename}"
+        f"[+] Text report saved: {filename}"
     )
+
+    return filename
+
+
+def save_json_report(
+    target,
+    hostname,
+    ports,
+    results,
+    start_time,
+    timeout,
+    mode
+):
+    os.makedirs(
+        "reports",
+        exist_ok=True
+    )
+
+    timestamp = datetime.now().strftime(
+        "%Y%m%d_%H%M%S"
+    )
+
+    filename = (
+        f"reports/"
+        f"scan_{target}_{timestamp}.json"
+    )
+
+    total_findings = sum(
+        len(result["findings"])
+        for result in results
+    )
+
+    report_data = {
+        "redscan_version": VERSION,
+        "target": target,
+        "hostname": hostname,
+        "scan_mode": mode,
+        "scan_time": start_time.strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
+        "ports_scanned": ports,
+        "timeout_seconds": timeout,
+        "open_port_count": len(results),
+        "finding_count": total_findings,
+        "open_ports": results
+    }
+
+    with open(
+        filename,
+        "w"
+    ) as report:
+
+        json.dump(
+            report_data,
+            report,
+            indent=4
+        )
+
+    print(
+        f"[+] JSON report saved: {filename}"
+    )
+
+    return filename
 
 
 def main():
@@ -856,6 +886,20 @@ def main():
             "TCP connection timeout "
             "in seconds "
             "(default: 1.0)"
+        )
+    )
+
+    parser.add_argument(
+        "--format",
+        choices=[
+            "txt",
+            "json",
+            "both"
+        ],
+        default="txt",
+        help=(
+            "Report format: txt, json, "
+            "or both (default: txt)"
         )
     )
 
@@ -956,6 +1000,11 @@ def main():
         f"{args.timeout} second(s)"
     )
 
+    print(
+        f"[*] Report format: "
+        f"{args.format}"
+    )
+
     hostname, aliases = (
         reverse_dns_lookup(
             args.target
@@ -981,16 +1030,31 @@ def main():
         args.mode
     )
 
-    save_report(
-        args.target,
-        hostname,
-        ports,
-        results,
-        start_time,
-        args.timeout,
-        args.mode
-    )
+    if args.format in ["txt", "both"]:
+
+        save_text_report(
+            args.target,
+            hostname,
+            ports,
+            results,
+            start_time,
+            args.timeout,
+            args.mode
+        )
+
+    if args.format in ["json", "both"]:
+
+        save_json_report(
+            args.target,
+            hostname,
+            ports,
+            results,
+            start_time,
+            args.timeout,
+            args.mode
+        )
 
 
 if __name__ == "__main__":
     main()
+
