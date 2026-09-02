@@ -111,19 +111,24 @@ def grab_banner(target, port, timeout):
     try:
         sock.connect((target, port))
 
-        banner = sock.recv(1024).decode("utf-8", errors="replace").strip()
+        banner = sock.recv(1024).decode(
+            "utf-8",
+            errors="replace"
+        ).strip()
 
-        if banner:
-            return banner[:300]
+        if not banner:
+            return "No banner received"
 
-        return "No banner received"
+        # Clean whitespace and limit the displayed banner
+        banner = " ".join(banner.split())
+
+        return banner[:300]
 
     except (socket.timeout, socket.error):
         return "Banner unavailable"
 
     finally:
         sock.close()
-
 
 def inspect_http(target, port, timeout):
     findings = []
