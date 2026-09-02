@@ -8,11 +8,14 @@ import subprocess
 from datetime import datetime
 
 
+VERSION = "1.0"
+
+
 def show_banner():
-    print("=" * 45)
-    print("          REDSCAN v0.9")
-    print("    Authorized Security Scanner")
-    print("=" * 45)
+    print("=" * 55)
+    print(f"              REDSCAN v{VERSION}")
+    print("      Authorized Security Scanner")
+    print("=" * 55)
 
 
 def validate_target(target):
@@ -32,66 +35,64 @@ def check_reachability(target):
         stderr=subprocess.DEVNULL
     )
 
-    return result.returncode == 0
+    if result.returncode == 0:
+        print("[+] Target is reachable.")
+        return True
+
+    print("[-] Target is not reachable.")
+    return False
 
 
-def parse_ports(port_input):
+def parse_ports(port_string):
     ports = set()
 
-    for item in port_input.split(","):
-        item = item.strip()
+    for part in port_string.split(","):
+        part = part.strip()
 
-        if "-" in item:
+        if not part:
+            continue
+
+        if "-" in part:
             try:
-                start, end = map(int, item.split("-", 1))
-
-                if start < 1 or end > 65535 or start > end:
-                    raise ValueError
-
-                ports.update(range(start, end + 1))
-
+                start, end = map(int, part.split("-", 1))
             except ValueError:
-                print(f"[-] Invalid port range: {item}")
-                return None
+                raise ValueError(f"Invalid port range: {part}")
+
+            if start < 1 or end > 65535 or start > end:
+                raise ValueError(f"Invalid port range: {part}")
+
+            ports.update(range(start, end + 1))
 
         else:
             try:
-                port = int(item)
-
-                if port < 1 or port > 65535:
-                    raise ValueError
-
-                ports.add(port)
-
+                port = int(part)
             except ValueError:
-                print(f"[-] Invalid port: {item}")
-                return None
+                raise ValueError(f"Invalid port: {part}")
+
+            if port < 1 or port > 65535:
+                raise ValueError(f"Invalid port: {port}")
+
+            ports.add(port)
 
     return sorted(ports)
 
 
-def scan_port(target, port):
+def scan_port(target, port, timeout=1):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(1)
+    sock.settimeout(timeout)
 
-    try:
-        result = sock.connect_ex((target, port))
-        return result == 0
+    result = sock.connect_ex((target, port))
 
-    except socket.error:
-        return False
+    sock.close()
 
-    finally:
-        sock.close()
+    return result == 0
 
 
 def detect_service(port):
     try:
-        service = socket.getservbyport(port, "tcp")
-        return service.upper()
-
+        return socket.getservbyport(port, "tcp")
     except OSError:
-        return "UNKNOWN"
+        return "unknown"
 
 
 def inspect_http(target, port):
@@ -99,49 +100,39 @@ def inspect_http(target, port):
 
     try:
         sock = socket.create_connection((target, port), timeout=2)
-
-        request = (
-            f"HEAD / HTTP/1.1\r\n"
-            f"Host: {target}\r\n"
-            f"Connection: close\r\n"
-            f"\r\n"
+        sock.sendall(
+            b"HEAD / HTTP/1.1\r\n"
+            b"Host: localhost\r\n"
+            b"Connection: close\r\n\r\n"
         )
 
-        sock.sendall(request.encode())
-
-        response = sock.recv(4096).decode(
-            "utf-8",
-            errors="replace"
-        )
-
+        response = sock.recv(4096).decode("utf-8", errors="replace")
         sock.close()
 
         lines = response.splitlines()
 
-        status_line = ""
-        server_header = ""
-
-        if lines:
-            status_line = lines[0]
-            print(f"    [+] HTTP response: {status_line}")
+        status = lines[0] if lines else "No response"
+        server = "Not disclosed"
 
         for line in lines:
             if line.lower().startswith("server:"):
-                server_header = line
-                print(f"    [+] {line}")
+                server = line.split(":", 1)[1].strip()
+                break
 
-        return status_line, server_header
+        print(f"    [+] HTTP response: {status}")
+        print(f"    [+] Server: {server}")
 
-    except (socket.timeout, socket.error):
-        print("    [-] HTTP inspection failed.")
-        return "", ""
+        return status, server
+
+    except (socket.timeout, ConnectionRefusedError, OSError) as error:
+        print(f"    [-] HTTP inspection failed: {error}")
+        return "Inspection failed", "Not available"
 
 
 def scan_ports(target, ports):
-    print("\n[*] Starting TCP port scan...")
-    print(f"[*] Ports to scan: {len(ports)}")
+    results = []
 
-    open_ports = []
+    print(f"\n[*] Scanning {len(ports)} port(s)...")
 
     for port in ports:
         print(f"[*] Checking port {port}...", end=" ")
@@ -151,71 +142,93 @@ def scan_ports(target, ports):
 
             print(f"OPEN ({service})")
 
-            http_status = ""
-            server_header = ""
+            http_status = None
+            server = None
 
-            if service in ["HTTP", "HTTP-ALT"] or port in [80, 443, 8080, 8000]:
-                http_status, server_header = inspect_http(target, port)
+            if port in [80, 443, 8000, 8080, 8443]:
+                http_status, server = inspect_http(target, port)
 
-            open_ports.append(
-                (port, service, http_status, server_header)
-            )
+            results.append({
+                "port": port,
+                "service": service,
+                "http_status": http_status,
+                "server": server
+            })
 
         else:
             print("CLOSED")
 
-    print("\n[*] Scan complete.")
+    return results
 
-    if open_ports:
-        print("\n[+] Open ports and services:")
 
-        for port, service, http_status, server_header in open_ports:
-            print(f"    - Port {port}: {service}")
+def print_summary(target, ports, results):
+    print("\n" + "=" * 55)
+    print("                    SCAN SUMMARY")
+    print("=" * 55)
 
-            if http_status:
-                print(f"      {http_status}")
+    print(f"Target       : {target}")
+    print(f"Ports scanned: {len(ports)}")
+    print(f"Open ports   : {len(results)}")
 
-            if server_header:
-                print(f"      {server_header}")
+    if results:
+        print("\nOpen Services:")
 
+        for result in results:
+            print(
+                f"  - Port {result['port']}: "
+                f"{result['service']}"
+            )
+
+            if result["http_status"]:
+                print(
+                    f"    HTTP: {result['http_status']}"
+                )
+
+            if result["server"]:
+                print(
+                    f"    Server: {result['server']}"
+                )
     else:
-        print("\n[-] No open ports found.")
+        print("\nNo open ports found.")
 
-    return open_ports
+    print("=" * 55)
 
 
-def save_report(target, ports, open_ports):
+def save_report(target, ports, results, start_time):
     os.makedirs("reports", exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
     filename = f"reports/scan_{target}_{timestamp}.txt"
 
-    with open(filename, "w", encoding="utf-8") as report:
-        report.write("REDSCAN SECURITY REPORT\n")
-        report.write("=" * 50 + "\n\n")
+    with open(filename, "w") as report:
+        report.write("=" * 55 + "\n")
+        report.write(f"REDScan v{VERSION} Scan Report\n")
+        report.write("=" * 55 + "\n\n")
 
         report.write(f"Target: {target}\n")
-        report.write(f"Scan time: {datetime.now()}\n")
-        report.write(f"Ports scanned: {len(ports)}\n\n")
+        report.write(
+            f"Scan time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        )
+        report.write(f"Ports scanned: {len(ports)}\n")
+        report.write(f"Open ports: {len(results)}\n\n")
 
-        report.write("OPEN PORTS\n")
-        report.write("-" * 50 + "\n")
+        if results:
+            report.write("Open Services:\n")
 
-        if open_ports:
-            for port, service, http_status, server_header in open_ports:
+            for result in results:
                 report.write(
-                    f"Port {port}: {service}\n"
+                    f"- Port {result['port']}: "
+                    f"{result['service']}\n"
                 )
 
-                if http_status:
+                if result["http_status"]:
                     report.write(
-                        f"  {http_status}\n"
+                        f"  HTTP: {result['http_status']}\n"
                     )
 
-                if server_header:
+                if result["server"]:
                     report.write(
-                        f"  {server_header}\n"
+                        f"  Server: {result['server']}\n"
                     )
 
         else:
@@ -225,54 +238,55 @@ def save_report(target, ports, open_ports):
 
 
 def main():
-    show_banner()
-
     parser = argparse.ArgumentParser(
-        description="Authorized reconnaissance scanner"
+        description="RedScan - Authorized Security Scanner"
     )
 
     parser.add_argument(
         "target",
-        help="Target IPv4 address"
+        help="Target IPv4 or IPv6 address"
     )
 
     parser.add_argument(
         "--ports",
         default="22,80,443",
-        help="Ports to scan. Example: 22,80,443 or 1-100"
+        help="Ports to scan, e.g. 22,80,443 or 20-25"
     )
 
     args = parser.parse_args()
 
-    print(f"\n[+] Target: {args.target}")
+    show_banner()
 
     if not validate_target(args.target):
-        print("[-] Invalid IP address.")
+        print(f"\n[-] Invalid IP address: {args.target}")
         return
 
-    print("[+] Valid IP address.")
-
-    ports = parse_ports(args.ports)
-
-    if ports is None:
+    try:
+        ports = parse_ports(args.ports)
+    except ValueError as error:
+        print(f"\n[-] {error}")
         return
 
     if not ports:
-        print("[-] No ports specified.")
+        print("\n[-] No valid ports specified.")
         return
 
-    if check_reachability(args.target):
-        print("[+] Target is reachable.")
-    else:
-        print("[-] Target is not reachable.")
-        return
+    start_time = datetime.now()
 
-    open_ports = scan_ports(args.target, ports)
+    print(f"\n[*] Target: {args.target}")
+    print(f"[*] Ports: {args.ports}")
+
+    check_reachability(args.target)
+
+    results = scan_ports(args.target, ports)
+
+    print_summary(args.target, ports, results)
 
     save_report(
         args.target,
         ports,
-        open_ports
+        results,
+        start_time
     )
 
 
