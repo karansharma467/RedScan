@@ -8,7 +8,14 @@ import subprocess
 from datetime import datetime
 
 
-VERSION = "1.1"
+VERSION = "1.2"
+
+
+# Port presets
+SCAN_MODES = {
+    "quick": "22,80,443,8080",
+    "web": "80,443,8000,8080,8443",
+}
 
 
 def show_banner():
@@ -70,7 +77,7 @@ def parse_ports(port_string):
                 raise ValueError(f"Invalid port: {part}")
 
             if port < 1 or port > 65535:
-                raise ValueError(f"Invalid port: {port}")
+                raise ValueError(f"Invalid port: {part}")
 
             ports.add(port)
 
@@ -99,7 +106,10 @@ def inspect_http(target, port):
     print(f"    [*] Inspecting HTTP service on port {port}...")
 
     try:
-        sock = socket.create_connection((target, port), timeout=2)
+        sock = socket.create_connection(
+            (target, port),
+            timeout=2
+        )
 
         sock.sendall(
             b"HEAD / HTTP/1.1\r\n"
@@ -170,12 +180,13 @@ def scan_ports(target, ports, timeout):
     return results
 
 
-def print_summary(target, ports, results, timeout):
+def print_summary(target, ports, results, timeout, mode):
     print("\n" + "=" * 55)
     print("                    SCAN SUMMARY")
     print("=" * 55)
 
     print(f"Target         : {target}")
+    print(f"Scan mode      : {mode}")
     print(f"Ports scanned  : {len(ports)}")
     print(f"Timeout        : {timeout} second(s)")
     print(f"Open ports     : {len(results)}")
@@ -204,25 +215,46 @@ def print_summary(target, ports, results, timeout):
     print("=" * 55)
 
 
-def save_report(target, ports, results, start_time, timeout):
+def save_report(
+    target,
+    ports,
+    results,
+    start_time,
+    timeout,
+    mode
+):
     os.makedirs("reports", exist_ok=True)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"reports/scan_{target}_{timestamp}.txt"
+    timestamp = datetime.now().strftime(
+        "%Y%m%d_%H%M%S"
+    )
+
+    filename = (
+        f"reports/scan_{target}_{timestamp}.txt"
+    )
 
     with open(filename, "w") as report:
         report.write("=" * 55 + "\n")
-        report.write(f"RedScan v{VERSION} Scan Report\n")
+        report.write(
+            f"RedScan v{VERSION} Scan Report\n"
+        )
         report.write("=" * 55 + "\n\n")
 
         report.write(f"Target: {target}\n")
+        report.write(f"Scan mode: {mode}\n")
         report.write(
             f"Scan time: "
             f"{start_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
         )
-        report.write(f"Ports scanned: {len(ports)}\n")
-        report.write(f"Timeout: {timeout} second(s)\n")
-        report.write(f"Open ports: {len(results)}\n\n")
+        report.write(
+            f"Ports scanned: {len(ports)}\n"
+        )
+        report.write(
+            f"Timeout: {timeout} second(s)\n"
+        )
+        report.write(
+            f"Open ports: {len(results)}\n\n"
+        )
 
         if results:
             report.write("Open Services:\n")
@@ -235,23 +267,29 @@ def save_report(target, ports, results, start_time, timeout):
 
                 if result["http_status"]:
                     report.write(
-                        f"  HTTP: {result['http_status']}\n"
+                        f"  HTTP: "
+                        f"{result['http_status']}\n"
                     )
 
                 if result["server"]:
                     report.write(
-                        f"  Server: {result['server']}\n"
+                        f"  Server: "
+                        f"{result['server']}\n"
                     )
 
         else:
-            report.write("No open ports found.\n")
+            report.write(
+                "No open ports found.\n"
+            )
 
     print(f"\n[+] Report saved: {filename}")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="RedScan - Authorized Security Scanner"
+        description=(
+            "RedScan - Authorized Security Scanner"
+        )
     )
 
     parser.add_argument(
@@ -260,45 +298,97 @@ def main():
     )
 
     parser.add_argument(
+        "--mode",
+        choices=["quick", "web", "custom"],
+        default="quick",
+        help=(
+            "Scan mode: quick, web, or custom "
+            "(default: quick)"
+        )
+    )
+
+    parser.add_argument(
         "--ports",
-        default="22,80,443",
-        help="Ports to scan, e.g. 22,80,443 or 20-25"
+        default=None,
+        help=(
+            "Custom ports, e.g. 22,80,443 "
+            "or 20-25"
+        )
     )
 
     parser.add_argument(
         "--timeout",
         type=float,
         default=1.0,
-        help="TCP connection timeout in seconds (default: 1.0)"
+        help=(
+            "TCP connection timeout in seconds "
+            "(default: 1.0)"
+        )
     )
 
     args = parser.parse_args()
 
     show_banner()
 
+    # Validate target
     if not validate_target(args.target):
-        print(f"\n[-] Invalid IP address: {args.target}")
+        print(
+            f"\n[-] Invalid IP address: "
+            f"{args.target}"
+        )
         return
 
+    # Validate timeout
     if args.timeout <= 0:
-        print("\n[-] Timeout must be greater than 0.")
+        print(
+            "\n[-] Timeout must be greater than 0."
+        )
         return
 
+    # Select scan mode
+    if args.mode == "custom":
+        if not args.ports:
+            print(
+                "\n[-] Custom mode requires "
+                "--ports."
+            )
+            print(
+                "    Example: "
+                "--mode custom --ports 20-25"
+            )
+            return
+
+        port_string = args.ports
+
+    elif args.ports:
+        # Allow --ports to override a preset
+        port_string = args.ports
+
+    else:
+        port_string = SCAN_MODES[args.mode]
+
+    # Parse ports
     try:
-        ports = parse_ports(args.ports)
+        ports = parse_ports(port_string)
     except ValueError as error:
         print(f"\n[-] {error}")
         return
 
     if not ports:
-        print("\n[-] No valid ports specified.")
+        print(
+            "\n[-] No valid ports specified."
+        )
         return
 
     start_time = datetime.now()
 
     print(f"\n[*] Target: {args.target}")
-    print(f"[*] Ports: {args.ports}")
-    print(f"[*] Timeout: {args.timeout} second(s)")
+    print(f"[*] Scan mode: {args.mode}")
+    print(f"[*] Ports: {port_string}")
+    print(
+        f"[*] Timeout: "
+        f"{args.timeout} second(s)"
+    )
 
     check_reachability(args.target)
 
@@ -312,7 +402,8 @@ def main():
         args.target,
         ports,
         results,
-        args.timeout
+        args.timeout,
+        args.mode
     )
 
     save_report(
@@ -320,7 +411,8 @@ def main():
         ports,
         results,
         start_time,
-        args.timeout
+        args.timeout,
+        args.mode
     )
 
 
