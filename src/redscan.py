@@ -8,21 +8,23 @@ import subprocess
 from datetime import datetime
 
 
-VERSION = "1.2"
+VERSION = "1.3"
 
 
-# Port presets
 SCAN_MODES = {
     "quick": "22,80,443,8080",
     "web": "80,443,8000,8080,8443",
 }
 
 
+HTTP_PORTS = [80, 443, 8000, 8080, 8443]
+
+
 def show_banner():
-    print("=" * 55)
-    print(f"              REDSCAN v{VERSION}")
-    print("      Authorized Security Scanner")
-    print("=" * 55)
+    print("=" * 60)
+    print(f"                 REDSCAN v{VERSION}")
+    print("          Authorized Security Scanner")
+    print("=" * 60)
 
 
 def validate_target(target):
@@ -102,8 +104,50 @@ def detect_service(port):
         return "unknown"
 
 
+def grab_banner(target, port, timeout=2):
+    """
+    Attempt a passive TCP banner read.
+
+    Some services send identifying information immediately
+    after a TCP connection is established.
+    """
+
+    try:
+        sock = socket.create_connection(
+            (target, port),
+            timeout=timeout
+        )
+
+        sock.settimeout(timeout)
+
+        data = sock.recv(1024)
+
+        sock.close()
+
+        if not data:
+            return None
+
+        banner = data.decode(
+            "utf-8",
+            errors="replace"
+        )
+
+        banner = banner.strip()
+
+        if not banner:
+            return None
+
+        return banner.replace("\r", "").replace("\n", " ")
+
+    except (socket.timeout, ConnectionRefusedError, OSError):
+        return None
+
+
 def inspect_http(target, port):
-    print(f"    [*] Inspecting HTTP service on port {port}...")
+    print(
+        f"    [*] Inspecting HTTP service "
+        f"on port {port}..."
+    )
 
     try:
         sock = socket.create_connection(
@@ -140,7 +184,9 @@ def inspect_http(target, port):
         return status, server
 
     except (socket.timeout, ConnectionRefusedError, OSError) as error:
-        print(f"    [-] HTTP inspection failed: {error}")
+        print(
+            f"    [-] HTTP inspection failed: {error}"
+        )
         return "Inspection failed", "Not available"
 
 
@@ -148,10 +194,16 @@ def scan_ports(target, ports, timeout):
     results = []
 
     print(f"\n[*] Scanning {len(ports)} port(s)...")
-    print(f"[*] Connection timeout: {timeout} second(s)")
+    print(
+        f"[*] Connection timeout: "
+        f"{timeout} second(s)"
+    )
 
     for port in ports:
-        print(f"[*] Checking port {port}...", end=" ")
+        print(
+            f"[*] Checking port {port}...",
+            end=" "
+        )
 
         if scan_port(target, port, timeout):
             service = detect_service(port)
@@ -160,16 +212,37 @@ def scan_ports(target, ports, timeout):
 
             http_status = None
             server = None
+            banner = None
 
-            if port in [80, 443, 8000, 8080, 8443]:
+            if port in HTTP_PORTS:
                 http_status, server = inspect_http(
                     target,
                     port
                 )
+            else:
+                print(
+                    f"    [*] Attempting banner detection "
+                    f"on port {port}..."
+                )
+
+                banner = grab_banner(
+                    target,
+                    port
+                )
+
+                if banner:
+                    print(
+                        f"    [+] Banner: {banner}"
+                    )
+                else:
+                    print(
+                        "    [-] No banner received."
+                    )
 
             results.append({
                 "port": port,
                 "service": service,
+                "banner": banner,
                 "http_status": http_status,
                 "server": server
             })
@@ -180,10 +253,16 @@ def scan_ports(target, ports, timeout):
     return results
 
 
-def print_summary(target, ports, results, timeout, mode):
-    print("\n" + "=" * 55)
-    print("                    SCAN SUMMARY")
-    print("=" * 55)
+def print_summary(
+    target,
+    ports,
+    results,
+    timeout,
+    mode
+):
+    print("\n" + "=" * 60)
+    print("                     SCAN SUMMARY")
+    print("=" * 60)
 
     print(f"Target         : {target}")
     print(f"Scan mode      : {mode}")
@@ -200,19 +279,28 @@ def print_summary(target, ports, results, timeout, mode):
                 f"{result['service']}"
             )
 
+            if result["banner"]:
+                print(
+                    f"    Banner: "
+                    f"{result['banner']}"
+                )
+
             if result["http_status"]:
                 print(
-                    f"    HTTP: {result['http_status']}"
+                    f"    HTTP: "
+                    f"{result['http_status']}"
                 )
 
             if result["server"]:
                 print(
-                    f"    Server: {result['server']}"
+                    f"    Server: "
+                    f"{result['server']}"
                 )
+
     else:
         print("\nNo open ports found.")
 
-    print("=" * 55)
+    print("=" * 60)
 
 
 def save_report(
@@ -234,11 +322,11 @@ def save_report(
     )
 
     with open(filename, "w") as report:
-        report.write("=" * 55 + "\n")
+        report.write("=" * 60 + "\n")
         report.write(
             f"RedScan v{VERSION} Scan Report\n"
         )
-        report.write("=" * 55 + "\n\n")
+        report.write("=" * 60 + "\n\n")
 
         report.write(f"Target: {target}\n")
         report.write(f"Scan mode: {mode}\n")
@@ -265,6 +353,12 @@ def save_report(
                     f"{result['service']}\n"
                 )
 
+                if result["banner"]:
+                    report.write(
+                        f"  Banner: "
+                        f"{result['banner']}\n"
+                    )
+
                 if result["http_status"]:
                     report.write(
                         f"  HTTP: "
@@ -282,7 +376,9 @@ def save_report(
                 "No open ports found.\n"
             )
 
-    print(f"\n[+] Report saved: {filename}")
+    print(
+        f"\n[+] Report saved: {filename}"
+    )
 
 
 def main():
@@ -330,7 +426,6 @@ def main():
 
     show_banner()
 
-    # Validate target
     if not validate_target(args.target):
         print(
             f"\n[-] Invalid IP address: "
@@ -338,14 +433,12 @@ def main():
         )
         return
 
-    # Validate timeout
     if args.timeout <= 0:
         print(
             "\n[-] Timeout must be greater than 0."
         )
         return
 
-    # Select scan mode
     if args.mode == "custom":
         if not args.ports:
             print(
@@ -361,13 +454,11 @@ def main():
         port_string = args.ports
 
     elif args.ports:
-        # Allow --ports to override a preset
         port_string = args.ports
 
     else:
         port_string = SCAN_MODES[args.mode]
 
-    # Parse ports
     try:
         ports = parse_ports(port_string)
     except ValueError as error:
