@@ -1,778 +1,324 @@
 #!/usr/bin/env python3
 
 import argparse
+import datetime
 import ipaddress
 import json
-import os
 import socket
-import subprocess
-from datetime import datetime
+from pathlib import Path
 
 
-VERSION = "1.6"
+VERSION = "1.7"
 
-SCAN_MODES = {
-    "quick": "22,80,443,8080",
-    "web": "80,443,8000,8080,8443",
-}
-
-HTTP_PORTS = [80, 443, 8000, 8080, 8443]
-
-
-def show_banner():
-    print("=" * 65)
-    print(f"                    REDSCAN v{VERSION}")
-    print("             Authorized Security Scanner")
-    print("=" * 65)
-
-
-def validate_target(target):
-    try:
-        ipaddress.ip_address(target)
-        return True
-    except ValueError:
-        return False
-
-
-def reverse_dns_lookup(target):
-    print(
-        f"\n[*] Performing reverse DNS lookup for {target}..."
-    )
-
-    try:
-        hostname, aliases, addresses = socket.gethostbyaddr(
-            target
-        )
-
-        print(f"[+] Hostname: {hostname}")
-
-        if aliases:
-            print(
-                f"[+] Aliases: {', '.join(aliases)}"
-            )
-
-        return hostname, aliases
-
-    except (socket.herror, socket.gaierror):
-        print("[-] No hostname found.")
-        return "Not found", []
-
-
-def check_reachability(target):
-    print(
-        f"\n[*] Checking reachability of {target}..."
-    )
-
-    result = subprocess.run(
-        ["ping", "-c", "1", "-W", "2", target],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
-    )
-
-    if result.returncode == 0:
-        print("[+] Target is reachable.")
-        return True
-
-    print("[-] Target is not reachable.")
-    return False
+QUICK_PORTS = [22, 80, 443, 8080]
+WEB_PORTS = [80, 443, 8000, 8080, 8443]
 
 
 def parse_ports(port_string):
     ports = set()
 
-    for part in port_string.split(","):
-        part = part.strip()
+    for item in port_string.split(","):
+        item = item.strip()
 
-        if not part:
+        if not item:
             continue
 
-        if "-" in part:
-            try:
-                start, end = map(
-                    int,
-                    part.split("-", 1)
-                )
-            except ValueError:
-                raise ValueError(
-                    f"Invalid port range: {part}"
-                )
+        if "-" in item:
+            start, end = item.split("-", 1)
+            start = int(start)
+            end = int(end)
 
-            if (
-                start < 1
-                or end > 65535
-                or start > end
-            ):
-                raise ValueError(
-                    f"Invalid port range: {part}"
-                )
+            if start > end:
+                raise ValueError("Invalid port range.")
 
-            ports.update(
-                range(start, end + 1)
-            )
+            for port in range(start, end + 1):
+                if 1 <= port <= 65535:
+                    ports.add(port)
+                else:
+                    raise ValueError("Port must be between 1 and 65535.")
 
         else:
-            try:
-                port = int(part)
-            except ValueError:
-                raise ValueError(
-                    f"Invalid port: {part}"
-                )
+            port = int(item)
 
-            if port < 1 or port > 65535:
-                raise ValueError(
-                    f"Invalid port: {part}"
-                )
+            if 1 <= port <= 65535:
+                ports.add(port)
+            else:
+                raise ValueError("Port must be between 1 and 65535.")
 
-            ports.add(port)
+    if not ports:
+        raise ValueError("No valid ports supplied.")
 
     return sorted(ports)
 
 
-def scan_port(target, port, timeout):
-    sock = socket.socket(
-        socket.AF_INET,
-        socket.SOCK_STREAM
-    )
+def validate_target(target):
+    try:
+        ipaddress.ip_address(target)
+        return target
+    except ValueError:
+        try:
+            return socket.gethostbyname(target)
+        except socket.gaierror:
+            raise ValueError("Invalid target or hostname.")
 
+
+def check_reachability(target):
+    try:
+        result = socket.gethostbyname(target)
+        return result is not None
+    except socket.gaierror:
+        return False
+
+
+def reverse_dns(target):
+    try:
+        hostname = socket.gethostbyaddr(target)[0]
+        return hostname
+    except (socket.herror, socket.gaierror):
+        return "Not available"
+
+
+def scan_port(target, port, timeout):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(timeout)
 
     try:
-        result = sock.connect_ex(
-            (target, port)
-        )
+        result = sock.connect_ex((target, port))
 
-        return result == 0
+        if result == 0:
+            return True
+
+        return False
+
+    except (socket.timeout, socket.error):
+        return False
 
     finally:
         sock.close()
 
 
-def detect_service(port):
+def identify_service(port):
     try:
-        return socket.getservbyport(
-            port,
-            "tcp"
-        )
+        return socket.getservbyport(port, "tcp")
     except OSError:
         return "unknown"
 
 
-def grab_banner(target, port, timeout=2):
+def grab_banner(target, port, timeout):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+
     try:
-        sock = socket.create_connection(
-            (target, port),
-            timeout=timeout
-        )
+        sock.connect((target, port))
 
-        sock.settimeout(timeout)
+        banner = sock.recv(1024).decode("utf-8", errors="replace").strip()
 
-        data = sock.recv(1024)
+        if banner:
+            return banner[:300]
 
+        return "No banner received"
+
+    except (socket.timeout, socket.error):
+        return "Banner unavailable"
+
+    finally:
         sock.close()
 
-        if not data:
-            return None
 
-        banner = data.decode(
-            "utf-8",
-            errors="replace"
-        ).strip()
+def inspect_http(target, port, timeout):
+    findings = []
 
-        if not banner:
-            return None
-
-        return (
-            banner
-            .replace("\r", "")
-            .replace("\n", " ")
-        )
-
-    except (
-        socket.timeout,
-        ConnectionRefusedError,
-        OSError
-    ):
-        return None
-
-
-def inspect_http(target, port):
-    print(
-        f"    [*] Inspecting HTTP service "
-        f"on port {port}..."
-    )
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
 
     try:
-        sock = socket.create_connection(
-            (target, port),
-            timeout=2
-        )
+        sock.connect((target, port))
 
         request = (
             "HEAD / HTTP/1.1\r\n"
-            "Host: localhost\r\n"
+            f"Host: {target}\r\n"
             "Connection: close\r\n"
             "\r\n"
         )
 
-        sock.sendall(
-            request.encode()
-        )
+        sock.sendall(request.encode())
 
-        response = sock.recv(
-            8192
-        ).decode(
-            "utf-8",
-            errors="replace"
-        )
-
-        sock.close()
+        response = sock.recv(8192).decode("iso-8859-1", errors="replace")
 
         lines = response.splitlines()
 
-        status = (
-            lines[0]
-            if lines
-            else "No response"
-        )
+        status_line = lines[0] if lines else "No HTTP response"
 
         headers = {}
 
         for line in lines[1:]:
             if ":" in line:
-                name, value = line.split(
-                    ":",
-                    1
-                )
+                key, value = line.split(":", 1)
+                headers[key.strip().lower()] = value.strip()
 
-                headers[
-                    name.strip().lower()
-                ] = value.strip()
+        server = headers.get("server", "Not disclosed")
 
-        server = headers.get(
-            "server",
-            "Not disclosed"
-        )
-
-        print(
-            f"    [+] HTTP response: {status}"
-        )
-
-        print(
-            f"    [+] Server: {server}"
-        )
-
-        return status, headers
-
-    except (
-        socket.timeout,
-        ConnectionRefusedError,
-        OSError
-    ) as error:
-
-        print(
-            f"    [-] HTTP inspection failed: "
-            f"{error}"
-        )
-
-        return (
-            "Inspection failed",
-            {}
-        )
-
-
-def check_http_security(headers, port):
-    findings = []
-
-    if not headers:
-        return findings
-
-    if "server" in headers:
-        findings.append({
-            "severity": "INFO",
-            "title": "Server information disclosed",
-            "details": (
-                f"Server header: "
-                f"{headers['server']}"
+        if server != "Not disclosed":
+            findings.append(
+                {
+                    "severity": "INFO",
+                    "title": "Server information disclosure",
+                    "description": f"HTTP Server header: {server}",
+                }
             )
-        })
 
-    if "x-content-type-options" not in headers:
-        findings.append({
-            "severity": "LOW",
-            "title": "Missing X-Content-Type-Options",
-            "details": (
-                "The response does not include "
-                "X-Content-Type-Options."
+        if "x-content-type-options" not in headers:
+            findings.append(
+                {
+                    "severity": "LOW",
+                    "title": "Missing X-Content-Type-Options",
+                    "description": "The HTTP response does not include the X-Content-Type-Options header.",
+                }
             )
-        })
 
-    if "x-frame-options" not in headers:
-        findings.append({
-            "severity": "LOW",
-            "title": "Missing X-Frame-Options",
-            "details": (
-                "The response does not include "
-                "X-Frame-Options."
+        if "x-frame-options" not in headers:
+            findings.append(
+                {
+                    "severity": "LOW",
+                    "title": "Missing X-Frame-Options",
+                    "description": "The HTTP response does not include the X-Frame-Options header.",
+                }
             )
-        })
 
-    if "content-security-policy" not in headers:
-        findings.append({
-            "severity": "LOW",
-            "title": "Missing Content-Security-Policy",
-            "details": (
-                "The response does not include "
-                "a Content-Security-Policy header."
+        if "content-security-policy" not in headers:
+            findings.append(
+                {
+                    "severity": "LOW",
+                    "title": "Missing Content-Security-Policy",
+                    "description": "The HTTP response does not include a Content-Security-Policy header.",
+                }
             )
-        })
 
-    if port == 443:
-        if "strict-transport-security" not in headers:
-            findings.append({
-                "severity": "MEDIUM",
-                "title": "Missing HSTS",
-                "details": (
-                    "HTTPS service does not advertise "
-                    "Strict-Transport-Security."
-                )
-            })
+        if port == 443 and "strict-transport-security" not in headers:
+            findings.append(
+                {
+                    "severity": "MEDIUM",
+                    "title": "Missing HSTS",
+                    "description": "HTTPS service does not include the Strict-Transport-Security header.",
+                }
+            )
 
-    return findings
+        # OPTIONS request
+        try:
+            options_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            options_sock.settimeout(timeout)
+            options_sock.connect((target, port))
 
+            options_request = (
+                "OPTIONS / HTTP/1.1\r\n"
+                f"Host: {target}\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+            )
 
-def check_http_methods(target, port):
-    findings = []
+            options_sock.sendall(options_request.encode())
 
-    try:
-        sock = socket.create_connection(
-            (target, port),
-            timeout=2
-        )
+            options_response = options_sock.recv(8192).decode(
+                "iso-8859-1",
+                errors="replace"
+            )
 
-        request = (
-            "OPTIONS / HTTP/1.1\r\n"
-            "Host: localhost\r\n"
-            "Connection: close\r\n"
-            "\r\n"
-        )
+            options_sock.close()
 
-        sock.sendall(
-            request.encode()
-        )
+            for line in options_response.splitlines():
+                if line.lower().startswith("allow:"):
+                    allow_value = line.split(":", 1)[1].strip()
 
-        response = sock.recv(
-            4096
-        ).decode(
-            "utf-8",
-            errors="replace"
-        )
+                    findings.append(
+                        {
+                            "severity": "INFO",
+                            "title": "HTTP methods advertised",
+                            "description": f"Allow header: {allow_value}",
+                        }
+                    )
 
+                    break
+
+        except (socket.timeout, socket.error):
+            pass
+
+        return {
+            "status": status_line,
+            "server": server,
+            "findings": findings,
+        }
+
+    except (socket.timeout, socket.error):
+        return {
+            "status": "HTTP inspection failed",
+            "server": "Unknown",
+            "findings": [],
+        }
+
+    finally:
         sock.close()
-
-        allow = None
-
-        for line in response.splitlines():
-            if line.lower().startswith("allow:"):
-                allow = line.split(
-                    ":",
-                    1
-                )[1].strip()
-                break
-
-        if allow:
-            print(
-                f"    [+] Allowed HTTP methods: {allow}"
-            )
-
-            findings.append({
-                "severity": "INFO",
-                "title": "HTTP methods advertised",
-                "details": (
-                    f"Allow header: {allow}"
-                )
-            })
-
-        return findings
-
-    except (
-        socket.timeout,
-        ConnectionRefusedError,
-        OSError
-    ):
-        return findings
-
-
-def run_security_checks(
-    target,
-    port,
-    headers
-):
-    findings = []
-
-    print(
-        "    [*] Running basic security checks..."
-    )
-
-    findings.extend(
-        check_http_security(
-            headers,
-            port
-        )
-    )
-
-    findings.extend(
-        check_http_methods(
-            target,
-            port
-        )
-    )
-
-    if findings:
-        for finding in findings:
-            print(
-                f"    [{finding['severity']}] "
-                f"{finding['title']}"
-            )
-    else:
-        print(
-            "    [+] No basic findings detected."
-        )
-
-    return findings
-
-
-def scan_ports(
-    target,
-    ports,
-    timeout
-):
-    results = []
-
-    print(
-        f"\n[*] Scanning "
-        f"{len(ports)} port(s)..."
-    )
-
-    print(
-        f"[*] Connection timeout: "
-        f"{timeout} second(s)"
-    )
-
-    for port in ports:
-
-        print(
-            f"[*] Checking port {port}...",
-            end=" "
-        )
-
-        if scan_port(
-            target,
-            port,
-            timeout
-        ):
-
-            service = detect_service(
-                port
-            )
-
-            print(
-                f"OPEN ({service})"
-            )
-
-            http_status = None
-            headers = {}
-            server = None
-            banner = None
-            findings = []
-
-            if port in HTTP_PORTS:
-
-                http_status, headers = (
-                    inspect_http(
-                        target,
-                        port
-                    )
-                )
-
-                server = headers.get(
-                    "server"
-                )
-
-                findings = run_security_checks(
-                    target,
-                    port,
-                    headers
-                )
-
-            else:
-
-                print(
-                    "    [*] Attempting "
-                    "banner detection..."
-                )
-
-                banner = grab_banner(
-                    target,
-                    port
-                )
-
-                if banner:
-                    print(
-                        f"    [+] Banner: "
-                        f"{banner}"
-                    )
-                else:
-                    print(
-                        "    [-] No banner received."
-                    )
-
-            results.append({
-                "port": port,
-                "service": service,
-                "banner": banner,
-                "http_status": http_status,
-                "server": server,
-                "findings": findings
-            })
-
-        else:
-
-            print("CLOSED")
-
-    return results
-
-
-def print_summary(
-    target,
-    hostname,
-    ports,
-    results,
-    timeout,
-    mode
-):
-    print(
-        "\n" + "=" * 65
-    )
-
-    print(
-        "                        SCAN SUMMARY"
-    )
-
-    print(
-        "=" * 65
-    )
-
-    print(
-        f"Target         : {target}"
-    )
-
-    print(
-        f"Hostname       : {hostname}"
-    )
-
-    print(
-        f"Scan mode      : {mode}"
-    )
-
-    print(
-        f"Ports scanned  : {len(ports)}"
-    )
-
-    print(
-        f"Timeout        : "
-        f"{timeout} second(s)"
-    )
-
-    print(
-        f"Open ports     : {len(results)}"
-    )
-
-    total_findings = sum(
-        len(result["findings"])
-        for result in results
-    )
-
-    print(
-        f"Findings       : {total_findings}"
-    )
-
-    if results:
-
-        print(
-            "\nOpen Services:"
-        )
-
-        for result in results:
-
-            print(
-                f"  - Port "
-                f"{result['port']}: "
-                f"{result['service']}"
-            )
-
-            if result["banner"]:
-                print(
-                    f"    Banner: "
-                    f"{result['banner']}"
-                )
-
-            if result["http_status"]:
-                print(
-                    f"    HTTP: "
-                    f"{result['http_status']}"
-                )
-
-            if result["server"]:
-                print(
-                    f"    Server: "
-                    f"{result['server']}"
-                )
-
-            if result["findings"]:
-
-                print(
-                    "    Security findings:"
-                )
-
-                for finding in result[
-                    "findings"
-                ]:
-
-                    print(
-                        f"      "
-                        f"[{finding['severity']}] "
-                        f"{finding['title']}"
-                    )
-
-    else:
-
-        print(
-            "\nNo open ports found."
-        )
-
-    print(
-        "=" * 65
-    )
 
 
 def save_text_report(
     target,
     hostname,
+    mode,
     ports,
-    results,
-    start_time,
     timeout,
-    mode
+    open_ports,
+    findings,
+    scan_time,
 ):
-    os.makedirs(
-        "reports",
-        exist_ok=True
-    )
+    reports_dir = Path("reports")
+    reports_dir.mkdir(exist_ok=True)
 
-    timestamp = datetime.now().strftime(
-        "%Y%m%d_%H%M%S"
-    )
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    filename = (
-        f"reports/"
-        f"scan_{target}_{timestamp}.txt"
-    )
+    filename = reports_dir / f"scan_{target}_{timestamp}.txt"
 
-    with open(
-        filename,
-        "w"
-    ) as report:
+    with open(filename, "w", encoding="utf-8") as file:
+        file.write("=" * 60 + "\n")
+        file.write("RedScan Security Assessment Report\n")
+        file.write("=" * 60 + "\n\n")
 
-        report.write(
-            "=" * 65 + "\n"
-        )
+        file.write(f"RedScan Version : {VERSION}\n")
+        file.write(f"Target          : {target}\n")
+        file.write(f"Hostname        : {hostname}\n")
+        file.write(f"Scan Mode       : {mode}\n")
+        file.write(f"Scan Time       : {scan_time}\n")
+        file.write(f"Timeout         : {timeout} seconds\n")
+        file.write(f"Ports Scanned   : {len(ports)}\n")
+        file.write(f"Open Ports      : {len(open_ports)}\n")
+        file.write(f"Findings        : {len(findings)}\n\n")
 
-        report.write(
-            f"RedScan v{VERSION} Scan Report\n"
-        )
+        file.write("-" * 60 + "\n")
+        file.write("OPEN PORTS\n")
+        file.write("-" * 60 + "\n\n")
 
-        report.write(
-            "=" * 65 + "\n\n"
-        )
+        if open_ports:
+            for item in open_ports:
+                file.write(f"Port       : {item['port']}\n")
+                file.write(f"Service    : {item['service']}\n")
+                file.write(f"Banner     : {item['banner']}\n")
 
-        report.write(
-            f"Target: {target}\n"
-        )
+                if item.get("http"):
+                    file.write(f"HTTP Status: {item['http']['status']}\n")
+                    file.write(f"HTTP Server: {item['http']['server']}\n")
 
-        report.write(
-            f"Hostname: {hostname}\n"
-        )
+                file.write("\n")
+        else:
+            file.write("No open TCP ports detected.\n\n")
 
-        report.write(
-            f"Scan mode: {mode}\n"
-        )
+        file.write("-" * 60 + "\n")
+        file.write("SECURITY FINDINGS\n")
+        file.write("-" * 60 + "\n\n")
 
-        report.write(
-            "Scan time: "
-            f"{start_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-        )
-
-        report.write(
-            f"Ports scanned: {len(ports)}\n"
-        )
-
-        report.write(
-            f"Timeout: {timeout} second(s)\n"
-        )
-
-        report.write(
-            f"Open ports: {len(results)}\n"
-        )
-
-        total_findings = sum(
-            len(result["findings"])
-            for result in results
-        )
-
-        report.write(
-            f"Findings: {total_findings}\n\n"
-        )
-
-        for result in results:
-
-            report.write(
-                f"- Port {result['port']}: "
-                f"{result['service']}\n"
-            )
-
-            if result["banner"]:
-                report.write(
-                    f"  Banner: "
-                    f"{result['banner']}\n"
-                )
-
-            if result["http_status"]:
-                report.write(
-                    f"  HTTP: "
-                    f"{result['http_status']}\n"
-                )
-
-            if result["server"]:
-                report.write(
-                    f"  Server: "
-                    f"{result['server']}\n"
-                )
-
-            for finding in result["findings"]:
-                report.write(
-                    f"  [{finding['severity']}] "
-                    f"{finding['title']}\n"
-                )
-
-                report.write(
-                    f"    {finding['details']}\n"
-                )
-
-            report.write("\n")
-
-    print(
-        f"[+] Text report saved: {filename}"
-    )
+        if findings:
+            for index, finding in enumerate(findings, 1):
+                file.write(f"{index}. [{finding['severity']}] {finding['title']}\n")
+                file.write(f"   {finding['description']}\n\n")
+        else:
+            file.write("No findings detected.\n")
 
     return filename
 
@@ -780,281 +326,550 @@ def save_text_report(
 def save_json_report(
     target,
     hostname,
+    mode,
     ports,
-    results,
-    start_time,
     timeout,
-    mode
+    open_ports,
+    findings,
+    scan_time,
 ):
-    os.makedirs(
-        "reports",
-        exist_ok=True
-    )
+    reports_dir = Path("reports")
+    reports_dir.mkdir(exist_ok=True)
 
-    timestamp = datetime.now().strftime(
-        "%Y%m%d_%H%M%S"
-    )
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    filename = (
-        f"reports/"
-        f"scan_{target}_{timestamp}.json"
-    )
+    filename = reports_dir / f"scan_{target}_{timestamp}.json"
 
-    total_findings = sum(
-        len(result["findings"])
-        for result in results
-    )
-
-    report_data = {
+    report = {
         "redscan_version": VERSION,
         "target": target,
         "hostname": hostname,
         "scan_mode": mode,
-        "scan_time": start_time.strftime(
-            "%Y-%m-%d %H:%M:%S"
-        ),
+        "scan_time": scan_time,
         "ports_scanned": ports,
         "timeout_seconds": timeout,
-        "open_port_count": len(results),
-        "finding_count": total_findings,
-        "open_ports": results
+        "open_port_count": len(open_ports),
+        "finding_count": len(findings),
+        "open_ports": open_ports,
+        "findings": findings,
     }
 
-    with open(
-        filename,
-        "w"
-    ) as report:
+    with open(filename, "w", encoding="utf-8") as file:
+        json.dump(report, file, indent=4)
 
-        json.dump(
-            report_data,
-            report,
-            indent=4
-        )
+    return filename
 
-    print(
-        f"[+] JSON report saved: {filename}"
-    )
+
+def save_html_report(
+    target,
+    hostname,
+    mode,
+    ports,
+    timeout,
+    open_ports,
+    findings,
+    scan_time,
+):
+    reports_dir = Path("reports")
+    reports_dir.mkdir(exist_ok=True)
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    filename = reports_dir / f"scan_{target}_{timestamp}.html"
+
+    severity_class = {
+        "INFO": "info",
+        "LOW": "low",
+        "MEDIUM": "medium",
+        "HIGH": "high",
+        "CRITICAL": "critical",
+    }
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>RedScan Report - {target}</title>
+
+<style>
+body {{
+    font-family: Arial, Helvetica, sans-serif;
+    background: #f4f6f8;
+    margin: 0;
+    padding: 0;
+    color: #222;
+}}
+
+.container {{
+    max-width: 1100px;
+    margin: 40px auto;
+    background: white;
+    padding: 35px;
+    border-radius: 12px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.08);
+}}
+
+h1 {{
+    margin-bottom: 5px;
+}}
+
+.subtitle {{
+    color: #666;
+    margin-bottom: 30px;
+}}
+
+.summary {{
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 15px;
+    margin-bottom: 30px;
+}}
+
+.card {{
+    padding: 20px;
+    background: #f7f8fa;
+    border-radius: 8px;
+    text-align: center;
+}}
+
+.card strong {{
+    display: block;
+    font-size: 28px;
+    margin-top: 8px;
+}}
+
+table {{
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 15px;
+    margin-bottom: 30px;
+}}
+
+th, td {{
+    padding: 12px;
+    border-bottom: 1px solid #ddd;
+    text-align: left;
+}}
+
+th {{
+    background: #f0f2f5;
+}}
+
+.finding {{
+    padding: 15px;
+    margin: 10px 0;
+    border-radius: 8px;
+    border-left: 5px solid;
+}}
+
+.info {{
+    background: #eef5ff;
+    border-color: #3498db;
+}}
+
+.low {{
+    background: #fff8e6;
+    border-color: #f1c40f;
+}}
+
+.medium {{
+    background: #fff0e6;
+    border-color: #e67e22;
+}}
+
+.high {{
+    background: #ffeaea;
+    border-color: #e74c3c;
+}}
+
+.critical {{
+    background: #f5e6e6;
+    border-color: #8e0000;
+}}
+
+.meta {{
+    line-height: 1.8;
+}}
+
+code {{
+    background: #f1f1f1;
+    padding: 3px 6px;
+    border-radius: 4px;
+}}
+
+.footer {{
+    margin-top: 35px;
+    color: #777;
+    font-size: 13px;
+}}
+
+@media (max-width: 700px) {{
+    .summary {{
+        grid-template-columns: 1fr 1fr;
+    }}
+
+    .container {{
+        margin: 10px;
+        padding: 20px;
+    }}
+}}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+<h1>🔎 RedScan Security Assessment</h1>
+
+<div class="subtitle">
+Authorized Reconnaissance & Vulnerability Assessment Framework
+</div>
+
+<div class="meta">
+<strong>Target:</strong> <code>{target}</code><br>
+<strong>Hostname:</strong> {hostname}<br>
+<strong>Scan Mode:</strong> {mode}<br>
+<strong>Scan Time:</strong> {scan_time}<br>
+<strong>Timeout:</strong> {timeout} seconds
+</div>
+
+<h2>Scan Summary</h2>
+
+<div class="summary">
+
+<div class="card">
+Ports Scanned
+<strong>{len(ports)}</strong>
+</div>
+
+<div class="card">
+Open Ports
+<strong>{len(open_ports)}</strong>
+</div>
+
+<div class="card">
+Findings
+<strong>{len(findings)}</strong>
+</div>
+
+<div class="card">
+Version
+<strong>{VERSION}</strong>
+</div>
+
+</div>
+
+<h2>Open Ports</h2>
+
+<table>
+
+<tr>
+<th>Port</th>
+<th>Service</th>
+<th>Banner</th>
+<th>HTTP</th>
+</tr>
+"""
+
+    if open_ports:
+        for item in open_ports:
+            http_info = "—"
+
+            if item.get("http"):
+                http_info = (
+                    f"{item['http']['status']}<br>"
+                    f"Server: {item['http']['server']}"
+                )
+
+            html += f"""
+<tr>
+<td>{item['port']}</td>
+<td>{item['service']}</td>
+<td>{item['banner']}</td>
+<td>{http_info}</td>
+</tr>
+"""
+    else:
+        html += """
+<tr>
+<td colspan="4">No open TCP ports detected.</td>
+</tr>
+"""
+
+    html += """
+</table>
+
+<h2>Security Findings</h2>
+"""
+
+    if findings:
+        for finding in findings:
+            css_class = severity_class.get(
+                finding["severity"],
+                "info"
+            )
+
+            html += f"""
+<div class="finding {css_class}">
+<strong>
+[{finding["severity"]}] {finding["title"]}
+</strong>
+<br>
+{finding["description"]}
+</div>
+"""
+    else:
+        html += """
+<p>No findings detected.</p>
+"""
+
+    html += f"""
+<div class="footer">
+Generated by RedScan v{VERSION}.<br>
+This report contains reconnaissance and assessment observations.
+Findings should be manually verified before treating them as confirmed vulnerabilities.
+</div>
+
+</div>
+
+</body>
+</html>
+"""
+
+    with open(filename, "w", encoding="utf-8") as file:
+        file.write(html)
 
     return filename
 
 
 def main():
-
     parser = argparse.ArgumentParser(
-        description=(
-            "RedScan - "
-            "Authorized Security Scanner"
-        )
+        description="RedScan - Authorized Reconnaissance & Vulnerability Assessment Framework"
     )
 
     parser.add_argument(
         "target",
-        help=(
-            "Target IPv4 or IPv6 address"
-        )
+        help="Target IP address or hostname"
     )
 
     parser.add_argument(
         "--mode",
-        choices=[
-            "quick",
-            "web",
-            "custom"
-        ],
+        choices=["quick", "web", "custom"],
         default="quick",
-        help=(
-            "Scan mode: quick, web, "
-            "or custom "
-            "(default: quick)"
-        )
+        help="Scan mode"
     )
 
     parser.add_argument(
         "--ports",
-        default=None,
-        help=(
-            "Custom ports, e.g. "
-            "22,80,443 or 20-25"
-        )
+        help="Custom ports, e.g. 22,80,443 or 1-100"
     )
 
     parser.add_argument(
         "--timeout",
         type=float,
         default=1.0,
-        help=(
-            "TCP connection timeout "
-            "in seconds "
-            "(default: 1.0)"
-        )
+        help="TCP connection timeout in seconds"
     )
 
     parser.add_argument(
         "--format",
-        choices=[
-            "txt",
-            "json",
-            "both"
-        ],
+        choices=["txt", "json", "html", "both", "all"],
         default="txt",
-        help=(
-            "Report format: txt, json, "
-            "or both (default: txt)"
-        )
+        help="Report format"
     )
 
     args = parser.parse_args()
 
-    show_banner()
-
-    if not validate_target(
-        args.target
-    ):
-
-        print(
-            f"\n[-] Invalid IP address: "
-            f"{args.target}"
-        )
-
-        return
-
-    if args.timeout <= 0:
-
-        print(
-            "\n[-] Timeout must be "
-            "greater than 0."
-        )
-
-        return
-
-    if args.mode == "custom":
-
-        if not args.ports:
-
-            print(
-                "\n[-] Custom mode requires "
-                "--ports."
-            )
-
-            print(
-                "    Example: "
-                "--mode custom "
-                "--ports 20-25"
-            )
-
-            return
-
-        port_string = args.ports
-
-    elif args.ports:
-
-        port_string = args.ports
-
-    else:
-
-        port_string = (
-            SCAN_MODES[args.mode]
-        )
+    print()
+    print("=" * 60)
+    print(f"RedScan v{VERSION}")
+    print("Authorized Reconnaissance & Vulnerability Assessment")
+    print("=" * 60)
 
     try:
-
-        ports = parse_ports(
-            port_string
-        )
-
+        target = validate_target(args.target)
     except ValueError as error:
-
-        print(
-            f"\n[-] {error}"
-        )
-
+        print(f"[!] Error: {error}")
         return
 
-    if not ports:
+    print(f"\n[*] Target: {target}")
 
-        print(
-            "\n[-] No valid ports specified."
-        )
-
+    if not check_reachability(target):
+        print("[!] Target is not reachable.")
         return
 
-    start_time = datetime.now()
+    print("[+] Target is reachable.")
 
-    print(
-        f"\n[*] Target: "
-        f"{args.target}"
+    hostname = reverse_dns(target)
+
+    print(f"[*] Hostname: {hostname}")
+
+    if args.mode == "quick":
+        ports = QUICK_PORTS
+
+    elif args.mode == "web":
+        ports = WEB_PORTS
+
+    else:
+        if not args.ports:
+            print("[!] Custom mode requires --ports.")
+            return
+
+        try:
+            ports = parse_ports(args.ports)
+        except ValueError as error:
+            print(f"[!] Error: {error}")
+            return
+
+    print(f"[*] Scan mode: {args.mode}")
+    print(f"[*] Ports: {ports}")
+    print(f"[*] Timeout: {args.timeout} seconds")
+
+    print("\n[*] Starting TCP scan...\n")
+
+    open_ports = []
+    findings = []
+
+    for port in ports:
+        print(f"[*] Scanning port {port}...", end=" ")
+
+        if scan_port(target, port, args.timeout):
+            service = identify_service(port)
+
+            print(f"OPEN ({service})")
+
+            banner = "Not requested"
+
+            if port not in [80, 443, 8000, 8080, 8443]:
+                banner = grab_banner(
+                    target,
+                    port,
+                    args.timeout
+                )
+
+            result = {
+                "port": port,
+                "service": service,
+                "banner": banner,
+            }
+
+            if port in [80, 443, 8000, 8080, 8443]:
+                print(f"    [*] Inspecting HTTP service...")
+
+                http_result = inspect_http(
+                    target,
+                    port,
+                    args.timeout
+                )
+
+                result["http"] = http_result
+
+                findings.extend(
+                    http_result["findings"]
+                )
+
+                print(
+                    f"    [+] HTTP Status: "
+                    f"{http_result['status']}"
+                )
+
+                print(
+                    f"    [+] Server: "
+                    f"{http_result['server']}"
+                )
+
+            else:
+                print(
+                    f"    [*] Banner: "
+                    f"{banner}"
+                )
+
+            open_ports.append(result)
+
+        else:
+            print("CLOSED/FILTERED")
+
+    scan_time = datetime.datetime.now().strftime(
+        "%Y-%m-%d %H:%M:%S"
     )
 
-    print(
-        f"[*] Scan mode: "
-        f"{args.mode}"
-    )
+    print("\n" + "=" * 60)
+    print("SCAN SUMMARY")
+    print("=" * 60)
 
-    print(
-        f"[*] Ports: "
-        f"{port_string}"
-    )
+    print(f"Target       : {target}")
+    print(f"Hostname     : {hostname}")
+    print(f"Ports scanned: {len(ports)}")
+    print(f"Open ports   : {len(open_ports)}")
+    print(f"Findings     : {len(findings)}")
 
-    print(
-        f"[*] Timeout: "
-        f"{args.timeout} second(s)"
-    )
+    if open_ports:
+        print("\nOpen Ports:")
 
-    print(
-        f"[*] Report format: "
-        f"{args.format}"
-    )
+        for item in open_ports:
+            print(
+                f"  {item['port']}/tcp "
+                f"- {item['service']}"
+            )
 
-    hostname, aliases = (
-        reverse_dns_lookup(
-            args.target
-        )
-    )
+    if findings:
+        print("\nSecurity Findings:")
 
-    check_reachability(
-        args.target
-    )
+        for finding in findings:
+            print(
+                f"  [{finding['severity']}] "
+                f"{finding['title']}"
+            )
 
-    results = scan_ports(
-        args.target,
-        ports,
-        args.timeout
-    )
+    print()
 
-    print_summary(
-        args.target,
-        hostname,
-        ports,
-        results,
-        args.timeout,
-        args.mode
-    )
-
-    if args.format in ["txt", "both"]:
-
-        save_text_report(
-            args.target,
+    if args.format in ["txt", "both", "all"]:
+        txt_file = save_text_report(
+            target,
             hostname,
+            args.mode,
             ports,
-            results,
-            start_time,
             args.timeout,
-            args.mode
+            open_ports,
+            findings,
+            scan_time,
         )
 
-    if args.format in ["json", "both"]:
+        print(f"[+] Text report: {txt_file}")
 
-        save_json_report(
-            args.target,
+    if args.format in ["json", "both", "all"]:
+        json_file = save_json_report(
+            target,
             hostname,
+            args.mode,
             ports,
-            results,
-            start_time,
             args.timeout,
-            args.mode
+            open_ports,
+            findings,
+            scan_time,
         )
+
+        print(f"[+] JSON report: {json_file}")
+
+    if args.format in ["html", "all"]:
+        html_file = save_html_report(
+            target,
+            hostname,
+            args.mode,
+            ports,
+            args.timeout,
+            open_ports,
+            findings,
+            scan_time,
+        )
+
+        print(f"[+] HTML report: {html_file}")
+
+    print("\n[+] Scan completed successfully.")
 
 
 if __name__ == "__main__":
     main()
-
