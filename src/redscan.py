@@ -21,39 +21,52 @@ def parse_ports(port_string):
         item = item.strip()
 
         if not item:
-            continue
+            raise ValueError("Empty port value.")
 
-        if "-" in item:
-            start, end = item.split("-", 1)
-            start = int(start)
-            end = int(end)
+        try:
+            if "-" in item:
+                parts = item.split("-", 1)
 
-            if start > end:
-                raise ValueError("Invalid port range.")
-
-            for port in range(start, end + 1):
-                if 1 <= port <= 65535:
-                    ports.add(port)
-                else:
+                if len(parts) != 2:
                     raise ValueError(
-                        "Port must be between 1 and 65535."
+                        f"Invalid port range: {item}"
                     )
 
-        else:
-            port = int(item)
+                start = int(parts[0].strip())
+                end = int(parts[1].strip())
 
-            if 1 <= port <= 65535:
-                ports.add(port)
+                if start > end:
+                    raise ValueError(
+                        f"Invalid port range: {item}"
+                    )
+
+                for port in range(start, end + 1):
+                    if not 1 <= port <= 65535:
+                        raise ValueError(
+                            f"Port must be between 1 and 65535: {port}"
+                        )
+
+                    ports.add(port)
+
             else:
-                raise ValueError(
-                    "Port must be between 1 and 65535."
-                )
+                port = int(item)
+
+                if not 1 <= port <= 65535:
+                    raise ValueError(
+                        f"Port must be between 1 and 65535: {port}"
+                    )
+
+                ports.add(port)
+
+        except ValueError:
+            raise ValueError(
+                f"Invalid port value: {item}"
+            )
 
     if not ports:
         raise ValueError("No valid ports supplied.")
 
     return sorted(ports)
-
 
 def validate_target(target):
     try:
