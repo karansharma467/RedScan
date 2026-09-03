@@ -23,45 +23,49 @@ def parse_ports(port_string):
         if not item:
             raise ValueError("Empty port value.")
 
-        try:
-            if "-" in item:
-                parts = item.split("-", 1)
+        if "-" in item:
+            parts = item.split("-", 1)
 
-                if len(parts) != 2:
-                    raise ValueError(
-                        f"Invalid port range: {item}"
-                    )
+            if len(parts) != 2:
+                raise ValueError(
+                    f"Invalid port range: {item}"
+                )
 
+            try:
                 start = int(parts[0].strip())
                 end = int(parts[1].strip())
+            except ValueError:
+                raise ValueError(
+                    f"Invalid port value: {item}"
+                )
 
-                if start > end:
-                    raise ValueError(
-                        f"Invalid port range: {item}"
-                    )
+            if start > end:
+                raise ValueError(
+                    f"Invalid port range: {item}"
+                )
 
-                for port in range(start, end + 1):
-                    if not 1 <= port <= 65535:
-                        raise ValueError(
-                            f"Port must be between 1 and 65535: {port}"
-                        )
-
-                    ports.add(port)
-
-            else:
-                port = int(item)
-
+            for port in range(start, end + 1):
                 if not 1 <= port <= 65535:
                     raise ValueError(
-                        f"Port must be between 1 and 65535: {port}"
+                        f"Invalid port value: {port}"
                     )
 
                 ports.add(port)
 
-        except ValueError:
-            raise ValueError(
-                f"Invalid port value: {item}"
-            )
+        else:
+            try:
+                port = int(item)
+            except ValueError:
+                raise ValueError(
+                    f"Invalid port value: {item}"
+                )
+
+            if not 1 <= port <= 65535:
+                raise ValueError(
+                    f"Invalid port value: {port}"
+                )
+
+            ports.add(port)
 
     if not ports:
         raise ValueError("No valid ports supplied.")

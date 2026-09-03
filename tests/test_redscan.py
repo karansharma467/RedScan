@@ -32,3 +32,33 @@ def test_identify_service():
 def test_reverse_dns():
     result = redscan.reverse_dns("127.0.0.1")
     assert result == "localhost"
+def test_invalid_port_text():
+    try:
+        redscan.parse_ports("abc")
+        assert False
+    except ValueError as error:
+        assert str(error) == "Invalid port value: abc"
+
+
+def test_invalid_port_zero():
+    try:
+        redscan.parse_ports("0")
+        assert False
+    except ValueError as error:
+        assert str(error) == "Invalid port value: 0"
+
+
+def test_invalid_port_too_large():
+    try:
+        redscan.parse_ports("70000")
+        assert False
+    except ValueError as error:
+        assert str(error) == "Invalid port value: 70000"
+
+
+def test_invalid_port_range():
+    try:
+        redscan.parse_ports("100-50")
+        assert False
+    except ValueError as error:
+        assert str(error) == "Invalid port range: 100-50"
