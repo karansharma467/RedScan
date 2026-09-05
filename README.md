@@ -49,7 +49,7 @@ Scans common ports:
 
 ```text
 22, 80, 443, 8080
-
+...
 ## Demo
 
 ![RedScan Scan Demo](docs/redscan-demo.png)
