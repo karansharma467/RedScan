@@ -52,4 +52,4 @@ Scans common ports:
 ```
 ## Demo
 
-![RedScan Scan Demo](docs/redscan-demo.png)
+![RedScan Scan Demo]
